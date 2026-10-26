@@ -1,0 +1,117 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// GANTI dengan Wi-Fi yang digunakan ESP32
+const char* ssid = "pp";
+const char* password = "12345678";
+
+// Broker MQTT publik untuk pengujian
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;
+
+// Harus sama dengan topic di index.html
+const char* topicControl = "esp32relay/7f3a9c2e/control";
+const char* topicStatus  = "esp32relay/7f3a9c2e/status";
+
+const int RELAY_PIN = 26;
+
+// Banyak modul relay aktif dengan logika LOW.
+// Jika relay kamu aktif-HIGH, ubah menjadi false.
+const bool RELAY_ACTIVE_LOW = true;
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+bool relayState = false;
+
+void setRelay(bool on) {
+  relayState = on;
+
+  if (RELAY_ACTIVE_LOW) {
+    digitalWrite(RELAY_PIN, on ? LOW : HIGH);
+  } else {
+    digitalWrite(RELAY_PIN, on ? HIGH : LOW);
+  }
+
+  client.publish(topicStatus, on ? "ON" : "OFF");
+  Serial.println(on ? "Relay ON" : "Relay OFF");
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, topicControl) != 0) return;
+
+  String command;
+  for (unsigned int i = 0; i < length; i++) {
+    command += (char)payload[i];
+  }
+  command.trim();
+  command.toUpperCase();
+
+  if (command == "ON") {
+    setRelay(true);
+  } else if (command == "OFF") {
+    setRelay(false);
+  }
+}
+
+void connectWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  Serial.print("Menghubungkan Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.print("IP ESP32: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Menghubungkan MQTT...");
+
+    String clientId = "ESP32Relay-";
+    clientId += String((uint32_t)ESP.getEfuseMac(), HEX);
+
+    if (client.connect(clientId.c_str())) {
+      Serial.println("terhubung");
+      client.subscribe(topicControl);
+
+      // Laporkan keadaan awal relay
+      client.publish(topicStatus, relayState ? "ON" : "OFF");
+    } else {
+      Serial.print("gagal, kode=");
+      Serial.println(client.state());
+      delay(3000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Pastikan relay mulai dalam keadaan OFF
+  digitalWrite(RELAY_PIN, RELAY_ACTIVE_LOW ? HIGH : LOW);
+  pinMode(RELAY_PIN, OUTPUT);
+  relayState = false;
+
+  connectWiFi();
+
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+}
+
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    connectWiFi();
+  }
+
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+
+  client.loop();
+}

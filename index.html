@@ -1,117 +1,124 @@
-#include <WiFi.h>
-#include <PubSubClient.h>
-
-// GANTI dengan Wi-Fi yang digunakan ESP32
-const char* ssid = "pp";
-const char* password = "12345678";
-
-// Broker MQTT publik untuk pengujian
-const char* mqtt_server = "broker.hivemq.com";
-const int mqtt_port = 1883;
-
-// Harus sama dengan topic di index.html
-const char* topicControl = "esp32relay/7f3a9c2e/control";
-const char* topicStatus  = "esp32relay/7f3a9c2e/status";
-
-const int RELAY_PIN = 26;
-
-// Banyak modul relay aktif dengan logika LOW.
-// Jika relay kamu aktif-HIGH, ubah menjadi false.
-const bool RELAY_ACTIVE_LOW = true;
-
-WiFiClient espClient;
-PubSubClient client(espClient);
-
-bool relayState = false;
-
-void setRelay(bool on) {
-  relayState = on;
-
-  if (RELAY_ACTIVE_LOW) {
-    digitalWrite(RELAY_PIN, on ? LOW : HIGH);
-  } else {
-    digitalWrite(RELAY_PIN, on ? HIGH : LOW);
-  }
-
-  client.publish(topicStatus, on ? "ON" : "OFF");
-  Serial.println(on ? "Relay ON" : "Relay OFF");
-}
-
-void callback(char* topic, byte* payload, unsigned int length) {
-  if (strcmp(topic, topicControl) != 0) return;
-
-  String command;
-  for (unsigned int i = 0; i < length; i++) {
-    command += (char)payload[i];
-  }
-  command.trim();
-  command.toUpperCase();
-
-  if (command == "ON") {
-    setRelay(true);
-  } else if (command == "OFF") {
-    setRelay(false);
-  }
-}
-
-void connectWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-
-  Serial.print("Menghubungkan Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println();
-  Serial.print("IP ESP32: ");
-  Serial.println(WiFi.localIP());
-}
-
-void reconnectMQTT() {
-  while (!client.connected()) {
-    Serial.print("Menghubungkan MQTT...");
-
-    String clientId = "ESP32Relay-";
-    clientId += String((uint32_t)ESP.getEfuseMac(), HEX);
-
-    if (client.connect(clientId.c_str())) {
-      Serial.println("terhubung");
-      client.subscribe(topicControl);
-
-      // Laporkan keadaan awal relay
-      client.publish(topicStatus, relayState ? "ON" : "OFF");
-    } else {
-      Serial.print("gagal, kode=");
-      Serial.println(client.state());
-      delay(3000);
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 Relay IoT</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #eef2f7;
+      text-align: center;
+      padding: 30px 15px;
     }
-  }
-}
+    .card {
+      background: white;
+      max-width: 380px;
+      margin: 30px auto;
+      padding: 25px;
+      border-radius: 16px;
+      box-shadow: 0 4px 18px #0001;
+    }
+    button {
+      width: 110px;
+      padding: 15px;
+      margin: 8px;
+      border: 0;
+      border-radius: 10px;
+      color: white;
+      font-size: 17px;
+      cursor: pointer;
+    }
+    #on { background: #16a34a; }
+    #off { background: #dc2626; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    #status { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>ESP32 Relay IoT</h2>
+  <div class="card">
+    <h3>Kontrol Relay 1</h3>
+    <p>Koneksi: <span id="connection">Menghubungkan...</span></p>
+    <p>Status relay: <span id="status">Belum diketahui</span></p>
+    <button id="on" disabled>ON</button>
+    <button id="off" disabled>OFF</button>
+    <p id="message">Menunggu koneksi MQTT...</p>
+  </div>
 
-void setup() {
-  Serial.begin(115200);
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    // Gunakan topic yang sama dengan program ESP32.
+    const topicControl = "esp32relay/7f3a9c2e/control";
+    const topicStatus  = "esp32relay/7f3a9c2e/status";
 
-  // Pastikan relay mulai dalam keadaan OFF
-  digitalWrite(RELAY_PIN, RELAY_ACTIVE_LOW ? HIGH : LOW);
-  pinMode(RELAY_PIN, OUTPUT);
-  relayState = false;
+    const connection = document.getElementById("connection");
+    const status = document.getElementById("status");
+    const message = document.getElementById("message");
+    const onButton = document.getElementById("on");
+    const offButton = document.getElementById("off");
 
-  connectWiFi();
+    const client = mqtt.connect(
+      "wss://broker.hivemq.com:8884/mqtt",
+      {
+        clientId: "web_" + Math.random().toString(16).slice(2, 12),
+        clean: true,
+        connectTimeout: 10000,
+        reconnectPeriod: 3000
+      }
+    );
 
-  client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(callback);
-}
+    client.on("connect", () => {
+      connection.textContent = "Terhubung";
+      message.textContent = "Siap mengirim perintah.";
+      onButton.disabled = false;
+      offButton.disabled = false;
 
-void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWiFi();
-  }
+      client.subscribe(topicStatus, (err) => {
+        if (err) message.textContent = "Gagal berlangganan status.";
+      });
+    });
 
-  if (!client.connected()) {
-    reconnectMQTT();
-  }
+    client.on("reconnect", () => {
+      connection.textContent = "Menghubungkan ulang...";
+      onButton.disabled = true;
+      offButton.disabled = true;
+    });
 
-  client.loop();
-}
+    client.on("error", () => {
+      connection.textContent = "Koneksi bermasalah";
+    });
+
+    client.on("offline", () => {
+      connection.textContent = "Offline";
+      onButton.disabled = true;
+      offButton.disabled = true;
+    });
+
+    client.on("message", (topic, payload) => {
+      if (topic === topicStatus) {
+        const value = payload.toString();
+        status.textContent =
+          value === "ON" ? "ON" :
+          value === "OFF" ? "OFF" : value;
+      }
+    });
+
+    function sendCommand(value) {
+      if (!client.connected) {
+        message.textContent = "Belum terhubung ke MQTT.";
+        return;
+      }
+
+      client.publish(topicControl, value, { qos: 0 }, (err) => {
+        message.textContent = err
+          ? "Perintah gagal dikirim."
+          : "Perintah " + value + " dikirim; menunggu status ESP32.";
+      });
+    }
+
+    onButton.addEventListener("click", () => sendCommand("ON"));
+    offButton.addEventListener("click", () => sendCommand("OFF"));
+  </script>
+</body>
+</html>
